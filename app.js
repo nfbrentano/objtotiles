@@ -327,11 +327,13 @@ btnConvert.addEventListener('click', async () => {
         const exporter = new THREE.GLTFExporter();
         
         const glbBuffer = await new Promise((resolve, reject) => {
-            exporter.parse(currentModelScene, function(result) {
-                resolve(result); // result é um ArrayBuffer com a flag binary: true
-            }, function(error) {
+            try {
+                exporter.parse(currentModelScene, function(result) {
+                    resolve(result); // result é um ArrayBuffer com a flag binary: true
+                }, { binary: true, animations: [] });
+            } catch (error) {
                 reject(error);
-            }, { binary: true, animations: [] });
+            }
         });
 
         updateStatus('Calculando Bounding Volume...', 65);
