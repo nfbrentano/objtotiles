@@ -111,10 +111,43 @@ fileInput.addEventListener('change', (e) => {
 });
 
 // Processa arquivos carregados
-function handleFiles(files) {
+async function handleFiles(files) {
     for (let file of files) {
         const ext = file.name.split('.').pop().toLowerCase();
-        uploadedFiles[file.name] = file;
+        if (ext === 'zip') {
+            updateStatus('Descompactando arquivo ZIP...', 10);
+            try {
+                const zip = await JSZip.loadAsync(file);
+                // Iterar sobre os arquivos dentro do ZIP e guardá-los no uploadedFiles
+                const promises = [];
+                zip.forEach((relativePath, zipEntry) => {
+                    if (zipEntry.dir) return;
+                    
+                    const name = zipEntry.name.split('/').pop(); // Pegar apenas o nome do arquivo, ignorando diretórios
+                    const entryExt = name.split('.').pop().toLowerCase();
+                    
+                    if (entryExt === 'obj' || entryExt === 'mtl' || entryExt === 'usdz') {
+                        const p = zipEntry.async('text').then(text => {
+                            uploadedFiles[name] = new File([text], name, { type: "text/plain" });
+                        });
+                        promises.push(p);
+                    } else if (['jpg', 'jpeg', 'png', 'gif'].includes(entryExt)) {
+                        const p = zipEntry.async('blob').then(blob => {
+                            uploadedFiles[name] = new File([blob], name, { type: `image/${entryExt}` });
+                        });
+                        promises.push(p);
+                    }
+                });
+                await Promise.all(promises);
+                updateStatus('ZIP descompactado com sucesso.', 100);
+                setTimeout(() => statusPanel.style.display = 'none', 1000);
+            } catch (err) {
+                console.error(err);
+                updateStatus('Erro ao ler arquivo ZIP: ' + err.message, 0);
+            }
+        } else {
+            uploadedFiles[file.name] = file;
+        }
     }
     updateFilesList();
 }
@@ -179,11 +212,36 @@ async function loadPreview() {
             
             let materials = null;
             if (mtlFile) {
-                const mtlText = await uploadedFiles[mtlFile].text();
+                let mtlText = await uploadedFiles[mtlFile].text();
+                
+                // Mapeia todas as texturas de imagem carregadas no navegador como Blob URLs
+                const textureMapping = {};
+                for (let name of fileNames) {
+                    const ext = name.split('.').pop().toLowerCase();
+                    if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
+                        const blob = uploadedFiles[name];
+                        const blobUrl = URL.createObjectURL(blob);
+                        textureMapping[name] = blobUrl;
+                    }
+                }
+                
+                // Reescreve as referências de textura no arquivo MTL para usar as Blob URLs geradas em memória
+                // MTL referências comuns: map_Kd, map_Ka, map_bump, bump, disp, decal
+                const mapRegex = /(map_Kd|map_Ka|map_Ks|map_Ns|map_d|map_bump|bump|disp|decal)\s+(.+)/gi;
+                mtlText = mtlText.replace(mapRegex, (match, prefix, path) => {
+                    const cleanPath = path.trim().split(/[\\/]/).pop(); // Pega apenas o nome do arquivo de textura
+                    if (textureMapping[cleanPath]) {
+                        return `${prefix} ${textureMapping[cleanPath]}`;
+                    }
+                    return match;
+                });
+
                 const mtlLoader = new THREE.MTLLoader();
-                // Passar path base para blob urls pode ser complexo. Nós carregamos as texturas direto se referenciadas localmente.
                 materials = mtlLoader.parse(mtlText);
                 materials.preload();
+                
+                // Habilitar crossOrigin para permitir carregar blobs locais do Three.js
+                materials.crossOrigin = '';
             }
 
             const objLoader = new THREE.OBJLoader();
@@ -198,7 +256,6 @@ async function loadPreview() {
             const arrayBuffer = await uploadedFiles[usdzFile].arrayBuffer();
             const loader = new THREE.USDZLoader();
             
-            // O USDZLoader retorna um Group/Object3D
             const object = await new Promise((resolve, reject) => {
                 try {
                     const loadedObj = loader.parse(arrayBuffer);
