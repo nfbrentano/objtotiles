@@ -17,6 +17,7 @@ const inputScale = document.getElementById('scale');
 let uploadedFiles = {};
 let currentModelScene = null;
 let threePreview = null;
+let activeTextureUrls = [];
 
 // Inicializa o visualizador Three.js
 function initThree() {
@@ -193,11 +194,15 @@ async function loadPreview() {
         initThree();
     }
 
-    // Limpa o modelo atual se existir
+        // Limpa o modelo atual se existir
     if (currentModelScene) {
         threePreview.scene.remove(currentModelScene);
         currentModelScene = null;
     }
+
+    // Revoga URLs antigas de texturas para liberar memória
+    activeTextureUrls.forEach(url => URL.revokeObjectURL(url));
+    activeTextureUrls = [];
 
     updateStatus('Lendo e renderizando modelo para preview...', 20);
 
@@ -210,41 +215,38 @@ async function loadPreview() {
             const mtlFile = fileNames.find(n => n.endsWith('.mtl'));
             const objText = await uploadedFiles[objFile].text();
             
-            let materials = null;
-            if (mtlFile) {
-                let mtlText = await uploadedFiles[mtlFile].text();
-                
-                // Mapeia todas as texturas de imagem carregadas no navegador como Blob URLs
-                const textureMapping = {};
-                for (let name of fileNames) {
-                    const ext = name.split('.').pop().toLowerCase();
-                    if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
-                        const blob = uploadedFiles[name];
-                        const blobUrl = URL.createObjectURL(blob);
-                        textureMapping[name] = blobUrl;
-                    }
+            // Mapeia todas as texturas de imagem carregadas no navegador como Blob URLs
+            const textureMapping = {};
+            for (let name of fileNames) {
+                const ext = name.split('.').pop().toLowerCase();
+                if (['jpg', 'jpeg', 'png', 'gif'].includes(ext)) {
+                    const blob = uploadedFiles[name];
+                    const blobUrl = URL.createObjectURL(blob);
+                    textureMapping[name] = blobUrl;
+                    activeTextureUrls.push(blobUrl);
                 }
-                
-                // Reescreve as referências de textura no arquivo MTL para usar as Blob URLs geradas em memória
-                // MTL referências comuns: map_Kd, map_Ka, map_bump, bump, disp, decal
-                const mapRegex = /(map_Kd|map_Ka|map_Ks|map_Ns|map_d|map_bump|bump|disp|decal)\s+(.+)/gi;
-                mtlText = mtlText.replace(mapRegex, (match, prefix, path) => {
-                    const cleanPath = path.trim().split(/[\\/]/).pop(); // Pega apenas o nome do arquivo de textura
-                    if (textureMapping[cleanPath]) {
-                        return `${prefix} ${textureMapping[cleanPath]}`;
-                    }
-                    return match;
-                });
-
-                const mtlLoader = new THREE.MTLLoader();
-                materials = mtlLoader.parse(mtlText);
-                materials.preload();
-                
-                // Habilitar crossOrigin para permitir carregar blobs locais do Three.js
-                materials.crossOrigin = '';
             }
 
-            const objLoader = new THREE.OBJLoader();
+            // Criar LoadingManager para resolver caminhos de textura para seus respectivos Blob URLs
+            const loadingManager = new THREE.LoadingManager();
+            loadingManager.setURLModifier((url) => {
+                // Remove caminhos e obter apenas o nome do arquivo
+                const cleanName = url.split('?')[0].split(/[\\/]/).pop();
+                if (textureMapping[cleanName]) {
+                    return textureMapping[cleanName];
+                }
+                return url;
+            });
+            
+            let materials = null;
+            if (mtlFile) {
+                const mtlText = await uploadedFiles[mtlFile].text();
+                const mtlLoader = new THREE.MTLLoader(loadingManager);
+                materials = mtlLoader.parse(mtlText);
+                materials.preload();
+            }
+
+            const objLoader = new THREE.OBJLoader(loadingManager);
             if (materials) {
                 objLoader.setMaterials(materials);
             }
